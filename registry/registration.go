@@ -1,9 +1,14 @@
 package registry
 
-type Registration struct {
+type RegistrationVO struct {
 	ServiceName ServiceName `form:"serviceName" json:"serviceName" validate:"required"`
 	ServiceURL  string      `form:"serviceURL" json:"serviceURL" validate:"required"`
 }
+
+// type Registration struct {
+// 	ServiceName ServiceName
+// 	ServiceURL  string
+// }
 
 type ServiceName string
 

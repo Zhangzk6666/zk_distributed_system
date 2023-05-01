@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 	"zk_distributed_system/registry"
 
 	"github.com/gin-gonic/gin"
@@ -23,6 +24,7 @@ func main() {
 		Handler:        router,
 		MaxHeaderBytes: 1 << 20,
 	}
+	go registry.Heartbeat(5 * time.Second)
 	go func() {
 		log.Println(srv.ListenAndServe())
 		log.Println("注册中心退出")

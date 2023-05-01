@@ -14,7 +14,7 @@ import (
 // "test服务"
 func main() {
 	host, port := "localhost", "8111"
-	r := registry.Registration{
+	r := registry.RegistrationVO{
 		ServiceName: "Test Service",
 		ServiceURL:  fmt.Sprintf("http://%s:%s", host, port),
 	}

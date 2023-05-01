@@ -2,7 +2,9 @@ package registry
 
 import (
 	"fmt"
+	"net/http"
 	"sync"
+	"time"
 	"zk_distributed_system/pkg/response"
 	"zk_distributed_system/pkg/valid"
 	"zk_distributed_system/zklog"
@@ -18,12 +20,16 @@ const (
 )
 
 type registry struct {
-	registration []Registration
+	registration map[ServiceName][]string // sericeName:[]string || 服务名:URLS
 	mutex        *sync.Mutex
+
+	// 负载均衡
+	// 心跳检测
+	// Notify 当注册中心易主后通知所有服务
 }
 
 var selfReg = registry{
-	registration: make([]Registration, 0),
+	registration: make(map[ServiceName][]string, 0),
 	mutex:        new(sync.Mutex),
 }
 
@@ -35,7 +41,7 @@ func RegisterHandlers(router *gin.Engine) {
 
 // / 服务注册
 func addService(ctx *gin.Context) {
-	var r Registration
+	var r RegistrationVO
 	ctx.ShouldBind(&r)
 	err := valid.Verification.Verify(r)
 	if err != nil {
@@ -47,6 +53,7 @@ func addService(ctx *gin.Context) {
 		"ServiceName": r.ServiceName,
 		"ServiceURL":  r.ServiceURL,
 	}).Info("Adding service:")
+
 	err = selfReg.add(r)
 	if err != nil {
 		zklog.Logger.Error(err)
@@ -58,7 +65,7 @@ func addService(ctx *gin.Context) {
 
 // /服务注销
 func removeService(ctx *gin.Context) {
-	var r Registration
+	var r RegistrationVO
 	ctx.ShouldBind(&r)
 	err := valid.Verification.Verify(r)
 	if err != nil {
@@ -68,7 +75,7 @@ func removeService(ctx *gin.Context) {
 	}
 	url := r.ServiceURL
 	zklog.Logger.Info("Remove service at URL:", url)
-	err = selfReg.remove(url)
+	err = selfReg.remove(r)
 	if err != nil {
 		zklog.Logger.Error(err)
 		response.ResponseMsg.FailResponse(ctx, err, nil)
@@ -77,21 +84,102 @@ func removeService(ctx *gin.Context) {
 	response.ResponseMsg.SuccessResponse(ctx, nil)
 }
 
-func (r *registry) add(reg Registration) error {
+func urlsExistUrl(urls []string, serviceUrl string) bool {
+	urlMap := make(map[string]struct{}, 0)
+	for i := 0; i < len(urls); i++ {
+		urlMap[urls[i]] = struct{}{}
+	}
+	_, exist := urlMap[serviceUrl]
+	return exist
+}
+func (r *registry) add(reg RegistrationVO) error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
-	r.registration = append(r.registration, reg)
+	serviceName := reg.ServiceName
+	serviceUrl := reg.ServiceURL
+	if _, ok := r.registration[serviceName]; !ok {
+		r.registration[serviceName] = make([]string, 0)
+	}
+
+	if exist := urlsExistUrl(r.registration[serviceName], serviceUrl); !exist {
+		r.registration[serviceName] = append(r.registration[serviceName], serviceUrl)
+	}
 	return nil
 }
-func (r *registry) remove(url string) error {
+func (r *registry) remove(reg RegistrationVO) error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
-	for i := range r.registration {
-		if r.registration[i].ServiceURL == url {
-			r.registration = append(r.registration[:i], r.registration[i+1:]...)
-			return nil
+	serviceName := reg.ServiceName
+	serviceUrl := reg.ServiceURL
+	if _, exist := r.registration[serviceName]; exist {
+		for i := range r.registration[serviceName] {
+			if r.registration[serviceName][i] == serviceUrl {
+				r.registration[serviceName] = append(r.registration[serviceName][:i], r.registration[serviceName][i+1:]...)
+				return nil
+			}
+		}
+		return response.NewErrWithMsg(response.PARAMETER_ERROR,
+			fmt.Sprintf("Found serviceName: %s ,not found URL: %s", serviceName, serviceUrl))
+	}
+	return response.NewErrWithMsg(response.PARAMETER_ERROR,
+		fmt.Sprintf("Not found serviceName: %s ,not found URL: %s", serviceName, serviceUrl))
+}
+
+// 心跳检测
+func Heartbeat(interval time.Duration) {
+	for {
+		checkReg := selfReg
+		tempUrlsMap := make(map[ServiceName]map[string]int)
+		for i := 0; i < 3; i++ {
+			for serviceName, serviceURLs := range checkReg.registration {
+				for _, url := range serviceURLs {
+					_, err := http.Get(url + "/healthy")
+					if err != nil {
+						zklog.Logger.WithFields(logrus.Fields{
+							"sericeName": serviceName,
+							"serviceURL": url,
+						}).Error("[心跳检测] 检测错误...")
+						urlsMap, ok := tempUrlsMap[serviceName]
+						if !ok {
+							tempUrlsMap[serviceName] = make(map[string]int)
+							urlsMap = tempUrlsMap[serviceName]
+						}
+						counts := urlsMap[url]
+						urlsMap[url] = counts + 1
+					} else {
+						zklog.Logger.WithFields(logrus.Fields{
+							"sericeName": serviceName,
+							"serviceURL": url,
+						}).Info("[心跳检测] 检测通过...")
+					}
+				}
+			}
+		}
+		removeUrlsMap := make(map[ServiceName][]string)
+		for serviceName, urlsMap := range tempUrlsMap {
+			for url, counts := range urlsMap {
+				if counts == 3 {
+					_, exist := removeUrlsMap[serviceName]
+					if !exist {
+						removeUrlsMap[serviceName] = make([]string, 0)
+					}
+					removeUrlsMap[serviceName] = append(removeUrlsMap[serviceName], url)
+				}
+			}
+		}
+		//删除 心跳检测失败的
+		removeUrls(removeUrlsMap)
+		time.Sleep(interval)
+	}
+}
+func removeUrls(removeUrlsMap map[ServiceName][]string) {
+	for serviceName, serviceUrls := range removeUrlsMap {
+		for _, url := range serviceUrls {
+			selfReg.remove(RegistrationVO{
+				ServiceName: serviceName,
+				ServiceURL:  url,
+			})
 		}
 	}
 
-	return response.NewErrWithMsg(response.PARAMETER_ERROR, fmt.Sprintf("Service at URL %s not found", url))
 }

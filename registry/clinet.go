@@ -8,7 +8,7 @@ import (
 	"net/http"
 )
 
-func RegisterService(r Registration) error {
+func RegisterService(r RegistrationVO) error {
 	buf := new(bytes.Buffer)
 	enc := json.NewEncoder(buf)
 	err := enc.Encode(r)
@@ -31,7 +31,7 @@ func RegisterService(r Registration) error {
 }
 
 func ShutdownService(serviceName ServiceName, url string) error {
-	r := Registration{
+	r := RegistrationVO{
 		ServiceName: serviceName,
 		ServiceURL:  url,
 	}

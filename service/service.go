@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"zk_distributed_system/pkg/response"
 	"zk_distributed_system/registry"
 
 	"github.com/gin-gonic/gin"
@@ -15,7 +16,7 @@ import (
 
 // 启动服务并注册
 func Start(ctx context.Context, host, port string,
-	reg registry.Registration, routerFunc func(router *gin.Engine)) (context.Context, error) {
+	reg registry.RegistrationVO, routerFunc func(router *gin.Engine)) (context.Context, error) {
 	ctx = startService(ctx, reg.ServiceName, host, port, routerFunc)
 	err := registry.RegisterService(reg)
 	if err != nil {
@@ -27,6 +28,7 @@ func Start(ctx context.Context, host, port string,
 func startService(ctx context.Context, serviceName registry.ServiceName, host, port string, routerFunc func(router *gin.Engine)) context.Context {
 	ctx, cancel := context.WithCancel(ctx)
 	router := gin.New()
+	healthyService(router)
 	routerFunc(router)
 	srv := &http.Server{
 		Addr:           fmt.Sprintf("%s:%s", host, port),
@@ -49,4 +51,10 @@ func startService(ctx context.Context, serviceName registry.ServiceName, host, p
 		srv.Shutdown(ctx)
 	}()
 	return ctx
+}
+
+func healthyService(router *gin.Engine) {
+	router.GET("/healthy", func(ctx *gin.Context) {
+		response.ResponseMsg.SuccessResponse(ctx, nil)
+	})
 }
