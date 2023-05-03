@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"math/rand"
 	"net/http"
 	"sync"
 	"time"
@@ -21,7 +22,7 @@ const (
 
 type registry struct {
 	registration map[ServiceName][]string // sericeName:[]string || 服务名:URLS
-	mutex        *sync.Mutex
+	mutex        *sync.RWMutex
 
 	// 负载均衡
 	// 心跳检测
@@ -30,12 +31,17 @@ type registry struct {
 
 var selfReg = registry{
 	registration: make(map[ServiceName][]string, 0),
-	mutex:        new(sync.Mutex),
+	mutex:        new(sync.RWMutex),
 }
 
 func RegisterHandlers(router *gin.Engine) {
 	zklog.Logger.Info("Request received")
+	// 获取服务
+	router.GET("/services", getService)
+	router.POST("/services/get", getService)
+	// 注册服务
 	router.POST("/services", addService)
+	// 注销服务
 	router.DELETE("/services", removeService)
 }
 
@@ -102,6 +108,7 @@ func (r *registry) add(reg RegistrationVO) error {
 	}
 
 	if exist := urlsExistUrl(r.registration[serviceName], serviceUrl); !exist {
+		fmt.Println(exist, "======= ======", r.registration)
 		r.registration[serviceName] = append(r.registration[serviceName], serviceUrl)
 	}
 	return nil
@@ -133,8 +140,8 @@ func Heartbeat(interval time.Duration) {
 		for i := 0; i < 3; i++ {
 			for serviceName, serviceURLs := range checkReg.registration {
 				for _, url := range serviceURLs {
-					_, err := http.Get(url + "/healthy")
-					if err != nil {
+					resp, err := http.Get(url + "/healthy")
+					if err != nil || resp.StatusCode != http.StatusOK {
 						zklog.Logger.WithFields(logrus.Fields{
 							"sericeName": serviceName,
 							"serviceURL": url,
@@ -146,12 +153,13 @@ func Heartbeat(interval time.Duration) {
 						}
 						counts := urlsMap[url]
 						urlsMap[url] = counts + 1
-					} else {
-						zklog.Logger.WithFields(logrus.Fields{
-							"sericeName": serviceName,
-							"serviceURL": url,
-						}).Info("[心跳检测] 检测通过...")
 					}
+					// else {
+					// zklog.Logger.WithFields(logrus.Fields{
+					// 	"sericeName": serviceName,
+					// 	"serviceURL": url,
+					// }).Info("[心跳检测] 检测通过...")
+					// }
 				}
 			}
 		}
@@ -168,7 +176,7 @@ func Heartbeat(interval time.Duration) {
 			}
 		}
 		//删除 心跳检测失败的
-		removeUrls(removeUrlsMap)
+		go removeUrls(removeUrlsMap)
 		time.Sleep(interval)
 	}
 }
@@ -182,4 +190,38 @@ func removeUrls(removeUrlsMap map[ServiceName][]string) {
 		}
 	}
 
+}
+
+// 注册中心拉取服务 | 随机负载均衡
+func getService(ctx *gin.Context) {
+	var r GetServiceVO
+	ctx.ShouldBind(&r)
+	err := valid.Verification.Verify(r)
+	if err != nil {
+		zklog.Logger.Error(err)
+		response.ResponseMsg.FailResponse(ctx, err, nil)
+		return
+	}
+	selfReg.mutex.RLock()
+	defer selfReg.mutex.RUnlock()
+	if len(selfReg.registration[r.ServiceName]) == 0 {
+		response.ResponseMsg.FailResponse(ctx, response.NewErr(response.ERROR), nil)
+		return
+	}
+	rand.Seed(time.Now().UnixNano())
+	index := rand.Intn(len(selfReg.registration[r.ServiceName]))
+	url := selfReg.registration[r.ServiceName][index]
+	zklog.Logger.WithFields(logrus.Fields{
+		"Selected Instance:": url,
+		"index":              index,
+		"counts":             len(selfReg.registration[r.ServiceName]),
+	}).Info("Selected Instance:", url)
+	if err != nil {
+		zklog.Logger.Error(err)
+		response.ResponseMsg.FailResponse(ctx, err, nil)
+		return
+	}
+	response.ResponseMsg.SuccessResponse(ctx, GetServiceDTO{
+		Url: url,
+	})
 }

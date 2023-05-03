@@ -1,8 +1,16 @@
 package registry
 
+type GetServiceDTO struct {
+	Url string `form:"url" json:"url" validate:"required"`
+}
+
 type RegistrationVO struct {
 	ServiceName ServiceName `form:"serviceName" json:"serviceName" validate:"required"`
 	ServiceURL  string      `form:"serviceURL" json:"serviceURL" validate:"required"`
+}
+
+type GetServiceVO struct {
+	ServiceName ServiceName `form:"serviceName" json:"serviceName" validate:"required"`
 }
 
 // type Registration struct {
